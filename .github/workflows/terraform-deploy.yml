@@ -1,0 +1,357 @@
+name: Terraform Deploy - Data Lake Layers
+run-name: >-
+  ${{
+    github.event_name == 'create' && format('🚀 Release: {0}', github.ref_name) ||
+    github.event_name == 'pull_request' && format('PR #{0}: {1}', github.event.pull_request.number, github.event.pull_request.title) ||
+    github.event_name == 'workflow_dispatch' && format('Manual: {0} ({1})', github.event.inputs.environment, github.event.inputs.action) ||
+    github.event.head_commit.message
+  }}
+
+on:
+  push:
+    branches: [main, develop, "feature/*", "release/*"]
+    paths:
+      - 'modules/**'
+      - '.github/workflows/terraform-deploy.yml'
+  create:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'modules/**'
+      - '.github/workflows/terraform-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        type: choice
+        options: [dev, qa, prod]
+      action:
+        description: 'Action to perform'
+        required: true
+        default: plan
+        type: choice
+        options: [plan, apply]
+      layer:
+        description: 'Layer to deploy'
+        required: true
+        default: all
+        type: choice
+        options: [all, raw, staging, business]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  AWS_REGION: 'eu-west-1'
+  TF_VERSION: '1.10.0'
+  # S3 backend from aws-bootstrap-tfstate-oidc
+  COMPANY_NAME: 'vigalcontec'
+
+jobs:
+  detect-environment:
+    name: Detect Environment
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name != 'create' ||
+      (github.event_name == 'create' && github.ref_type == 'branch' && startsWith(github.ref_name, 'release/'))
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      environment: ${{ steps.detect.outputs.environment }}
+      env_upper: ${{ steps.detect.outputs.env_upper }}
+    steps:
+      - id: detect
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ENV="prod"
+          elif [[ "${{ github.ref }}" == refs/heads/release/* ]]; then
+            ENV="qa"
+          else
+            ENV="dev"
+          fi
+          echo "environment=${ENV}" >> $GITHUB_OUTPUT
+          echo "env_upper=$(echo ${ENV} | tr '[:lower:]' '[:upper:]')" >> $GITHUB_OUTPUT
+
+  validate:
+    name: Validate & Lint
+    runs-on: ubuntu-latest
+    needs: detect-environment
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        working-directory: ./modules
+        continue-on-error: true
+
+      - name: Terraform Validate - Raw
+        run: terraform init -backend=false && terraform validate
+        working-directory: ./modules/raw
+
+      - name: Terraform Validate - Staging
+        run: terraform init -backend=false && terraform validate
+        working-directory: ./modules/staging
+
+      - name: Terraform Validate - Business
+        run: terraform init -backend=false && terraform validate
+        working-directory: ./modules/business
+
+  security-scan:
+    name: Security Scan (Checkov)
+    runs-on: ubuntu-latest
+    needs: detect-environment
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: ./modules
+          framework: terraform
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+          soft_fail: true
+
+      - name: Upload SARIF results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov-results.sarif
+        continue-on-error: true
+
+  deploy:
+    name: Deploy (${{ needs.detect-environment.outputs.environment }})
+    runs-on: ubuntu-latest
+    needs: [detect-environment, validate, security-scan]
+    timeout-minutes: 40
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ENV: ${{ needs.detect-environment.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_ARN_{0}', needs.detect-environment.outputs.env_upper)] }}
+          role-session-name: DataLakeDeploy-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get AWS Account ID
+        id: account
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
+          echo "Account ID: $ACCOUNT_ID"
+
+      # =========================================
+      # Deploy Raw Layer
+      # =========================================
+      - name: Generate Backend - Raw Layer
+        if: github.event.inputs.layer == 'all' || github.event.inputs.layer == 'raw' || github.event.inputs.layer == ''
+        run: |
+          BACKEND_BUCKET="tfstate-${{ env.COMPANY_NAME }}-${{ env.ENV }}-${{ steps.account.outputs.account_id }}"
+          
+          cat > backend.tf << EOF
+          terraform {
+            backend "s3" {
+              bucket  = "$BACKEND_BUCKET"
+              key     = "datalake/raw/terraform.tfstate"
+              region  = "${{ env.AWS_REGION }}"
+              encrypt = true
+            }
+          }
+          EOF
+          
+          echo "Generated backend.tf for Raw layer:"
+          cat backend.tf
+        working-directory: ./modules/raw
+
+      - name: Generate tfvars - Raw Layer
+        if: github.event.inputs.layer == 'all' || github.event.inputs.layer == 'raw' || github.event.inputs.layer == ''
+        run: |
+          cat > terraform.tfvars << EOF
+          environment  = "${{ env.ENV }}"
+          company_name = "${{ env.COMPANY_NAME }}"
+          aws_region   = "${{ env.AWS_REGION }}"
+          
+          tags = {
+            Environment = "${{ env.ENV }}"
+            Project     = "datalake"
+            Layer       = "raw"
+            ManagedBy   = "terraform"
+          }
+          EOF
+        working-directory: ./modules/raw
+
+      - name: Terraform Init - Raw Layer
+        if: github.event.inputs.layer == 'all' || github.event.inputs.layer == 'raw' || github.event.inputs.layer == ''
+        run: terraform init -reconfigure
+        working-directory: ./modules/raw
+
+      - name: Terraform Plan - Raw Layer
+        if: github.event.inputs.layer == 'all' || github.event.inputs.layer == 'raw' || github.event.inputs.layer == ''
+        run: terraform plan -out=tfplan -input=false
+        working-directory: ./modules/raw
+
+      - name: Terraform Apply - Raw Layer
+        if: |
+          (github.event.inputs.layer == 'all' || github.event.inputs.layer == 'raw' || github.event.inputs.layer == '') &&
+          github.event_name != 'pull_request' && 
+          (github.event_name != 'workflow_dispatch' || github.event.inputs.action == 'apply')
+        run: terraform apply -auto-approve -input=false tfplan
+        working-directory: ./modules/raw
+
+      # =========================================
+      # Deploy Staging Layer
+      # =========================================
+      - name: Generate Backend - Staging Layer
+        if: github.event.inputs.layer == 'all' || github.event.inputs.layer == 'staging' || github.event.inputs.layer == ''
+        run: |
+          BACKEND_BUCKET="tfstate-${{ env.COMPANY_NAME }}-${{ env.ENV }}-${{ steps.account.outputs.account_id }}"
+          
+          cat > backend.tf << EOF
+          terraform {
+            backend "s3" {
+              bucket  = "$BACKEND_BUCKET"
+              key     = "datalake/staging/terraform.tfstate"
+              region  = "${{ env.AWS_REGION }}"
+              encrypt = true
+            }
+          }
+          EOF
+        working-directory: ./modules/staging
+
+      - name: Generate tfvars - Staging Layer
+        if: github.event.inputs.layer == 'all' || github.event.inputs.layer == 'staging' || github.event.inputs.layer == ''
+        run: |
+          cat > terraform.tfvars << EOF
+          environment  = "${{ env.ENV }}"
+          company_name = "${{ env.COMPANY_NAME }}"
+          aws_region   = "${{ env.AWS_REGION }}"
+          
+          tags = {
+            Environment = "${{ env.ENV }}"
+            Project     = "datalake"
+            Layer       = "staging"
+            ManagedBy   = "terraform"
+          }
+          EOF
+        working-directory: ./modules/staging
+
+      - name: Terraform Init - Staging Layer
+        if: github.event.inputs.layer == 'all' || github.event.inputs.layer == 'staging' || github.event.inputs.layer == ''
+        run: terraform init -reconfigure
+        working-directory: ./modules/staging
+
+      - name: Terraform Plan - Staging Layer
+        if: github.event.inputs.layer == 'all' || github.event.inputs.layer == 'staging' || github.event.inputs.layer == ''
+        run: terraform plan -out=tfplan -input=false
+        working-directory: ./modules/staging
+
+      - name: Terraform Apply - Staging Layer
+        if: |
+          (github.event.inputs.layer == 'all' || github.event.inputs.layer == 'staging' || github.event.inputs.layer == '') &&
+          github.event_name != 'pull_request' && 
+          (github.event_name != 'workflow_dispatch' || github.event.inputs.action == 'apply')
+        run: terraform apply -auto-approve -input=false tfplan
+        working-directory: ./modules/staging
+
+      # =========================================
+      # Deploy Business Layer
+      # =========================================
+      - name: Generate Backend - Business Layer
+        if: github.event.inputs.layer == 'all' || github.event.inputs.layer == 'business' || github.event.inputs.layer == ''
+        run: |
+          BACKEND_BUCKET="tfstate-${{ env.COMPANY_NAME }}-${{ env.ENV }}-${{ steps.account.outputs.account_id }}"
+          
+          cat > backend.tf << EOF
+          terraform {
+            backend "s3" {
+              bucket  = "$BACKEND_BUCKET"
+              key     = "datalake/business/terraform.tfstate"
+              region  = "${{ env.AWS_REGION }}"
+              encrypt = true
+            }
+          }
+          EOF
+        working-directory: ./modules/business
+
+      - name: Generate tfvars - Business Layer
+        if: github.event.inputs.layer == 'all' || github.event.inputs.layer == 'business' || github.event.inputs.layer == ''
+        run: |
+          cat > terraform.tfvars << EOF
+          environment  = "${{ env.ENV }}"
+          company_name = "${{ env.COMPANY_NAME }}"
+          aws_region   = "${{ env.AWS_REGION }}"
+          
+          tags = {
+            Environment = "${{ env.ENV }}"
+            Project     = "datalake"
+            Layer       = "business"
+            ManagedBy   = "terraform"
+          }
+          EOF
+        working-directory: ./modules/business
+
+      - name: Terraform Init - Business Layer
+        if: github.event.inputs.layer == 'all' || github.event.inputs.layer == 'business' || github.event.inputs.layer == ''
+        run: terraform init -reconfigure
+        working-directory: ./modules/business
+
+      - name: Terraform Plan - Business Layer
+        if: github.event.inputs.layer == 'all' || github.event.inputs.layer == 'business' || github.event.inputs.layer == ''
+        run: terraform plan -out=tfplan -input=false
+        working-directory: ./modules/business
+
+      - name: Terraform Apply - Business Layer
+        if: |
+          (github.event.inputs.layer == 'all' || github.event.inputs.layer == 'business' || github.event.inputs.layer == '') &&
+          github.event_name != 'pull_request' && 
+          (github.event_name != 'workflow_dispatch' || github.event.inputs.action == 'apply')
+        run: terraform apply -auto-approve -input=false tfplan
+        working-directory: ./modules/business
+
+      # =========================================
+      # Summary
+      # =========================================
+      - name: Deployment Summary
+        if: success()
+        run: |
+          echo "## 🎉 Data Lake Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Environment:** ${{ env.ENV }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Account ID:** ${{ steps.account.outputs.account_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### State Paths" >> $GITHUB_STEP_SUMMARY
+          echo "| Layer | S3 Key |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Raw | \`datalake/raw/terraform.tfstate\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Staging | \`datalake/staging/terraform.tfstate\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Business | \`datalake/business/terraform.tfstate\` |" >> $GITHUB_STEP_SUMMARY
