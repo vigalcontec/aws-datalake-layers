@@ -59,6 +59,48 @@ resource "aws_s3_bucket_public_access_block" "raw" {
   restrict_public_buckets = true
 }
 
+resource "aws_s3_bucket_policy" "raw" {
+  bucket = aws_s3_bucket.raw.id
+
+  depends_on = [aws_s3_bucket_public_access_block.raw]
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnforceTLSRequestsOnly"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.raw.arn,
+          "${aws_s3_bucket.raw.arn}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      },
+      {
+        Sid       = "EnforceTLSVersion"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.raw.arn,
+          "${aws_s3_bucket.raw.arn}/*"
+        ]
+        Condition = {
+          NumericLessThan = {
+            "s3:TlsVersion" = "1.2"
+          }
+        }
+      }
+    ]
+  })
+}
+
 resource "aws_s3_bucket_lifecycle_configuration" "raw" {
   bucket = aws_s3_bucket.raw.id
 
@@ -67,17 +109,17 @@ resource "aws_s3_bucket_lifecycle_configuration" "raw" {
     status = "Enabled"
 
     transition {
-      days          = 90
+      days          = var.transition_to_ia_days
       storage_class = "STANDARD_IA"
     }
 
     transition {
-      days          = 180
+      days          = var.transition_to_glacier_days
       storage_class = "GLACIER"
     }
 
     noncurrent_version_expiration {
-      noncurrent_days = 90
+      noncurrent_days = var.noncurrent_version_expiration_days
     }
 
     abort_incomplete_multipart_upload {
@@ -87,12 +129,82 @@ resource "aws_s3_bucket_lifecycle_configuration" "raw" {
 }
 
 # -----------------------------------------------------------------------------
+# Access Logging (Optional)
+# -----------------------------------------------------------------------------
+resource "aws_s3_bucket_logging" "raw" {
+  count = var.enable_access_logging ? 1 : 0
+
+  bucket        = aws_s3_bucket.raw.id
+  target_bucket = var.logs_bucket_name
+  target_prefix = "raw/${var.environment}/"
+}
+
+# -----------------------------------------------------------------------------
 # KMS Key - Raw Layer Encryption
 # -----------------------------------------------------------------------------
 resource "aws_kms_key" "raw" {
   description             = "KMS key for Raw layer data encryption - ${var.environment}"
   enable_key_rotation     = true
   deletion_window_in_days = 30
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableRootAccountPermissions"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid       = "AllowLambdaService"
+        Effect    = "Allow"
+        Principal = { Service = "lambda.amazonaws.com" }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:CallerAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      },
+      {
+        Sid       = "AllowGlueService"
+        Effect    = "Allow"
+        Principal = { Service = "glue.amazonaws.com" }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:CallerAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      },
+      {
+        Sid       = "AllowServiceRolesViaGrants"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action = [
+          "kms:CreateGrant",
+          "kms:ListGrants",
+          "kms:RevokeGrant"
+        ]
+        Resource = "*"
+        Condition = {
+          Bool = {
+            "kms:GrantIsForAWSResource" = "true"
+          }
+        }
+      }
+    ]
+  })
 
   tags = merge(var.tags, {
     Name        = "datalake-raw-kms-${var.environment}"

@@ -59,6 +59,48 @@ resource "aws_s3_bucket_public_access_block" "business" {
   restrict_public_buckets = true
 }
 
+resource "aws_s3_bucket_policy" "business" {
+  bucket = aws_s3_bucket.business.id
+
+  depends_on = [aws_s3_bucket_public_access_block.business]
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnforceTLSRequestsOnly"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.business.arn,
+          "${aws_s3_bucket.business.arn}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
+      },
+      {
+        Sid       = "EnforceTLSVersion"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.business.arn,
+          "${aws_s3_bucket.business.arn}/*"
+        ]
+        Condition = {
+          NumericLessThan = {
+            "s3:TlsVersion" = "1.2"
+          }
+        }
+      }
+    ]
+  })
+}
+
 resource "aws_s3_bucket_lifecycle_configuration" "business" {
   bucket = aws_s3_bucket.business.id
 
@@ -67,7 +109,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "business" {
     status = "Enabled"
 
     transition {
-      days          = 365
+      days          = var.archive_to_glacier_days
       storage_class = "GLACIER"
     }
 
@@ -82,12 +124,82 @@ resource "aws_s3_bucket_lifecycle_configuration" "business" {
 }
 
 # -----------------------------------------------------------------------------
+# Access Logging (Optional)
+# -----------------------------------------------------------------------------
+resource "aws_s3_bucket_logging" "business" {
+  count = var.enable_access_logging ? 1 : 0
+
+  bucket        = aws_s3_bucket.business.id
+  target_bucket = var.logs_bucket_name
+  target_prefix = "business/${var.environment}/"
+}
+
+# -----------------------------------------------------------------------------
 # KMS Key - Business Layer Encryption
 # -----------------------------------------------------------------------------
 resource "aws_kms_key" "business" {
   description             = "KMS key for Business layer data encryption - ${var.environment}"
   enable_key_rotation     = true
   deletion_window_in_days = 30
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "EnableRootAccountPermissions"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = "kms:*"
+        Resource  = "*"
+      },
+      {
+        Sid       = "AllowLambdaService"
+        Effect    = "Allow"
+        Principal = { Service = "lambda.amazonaws.com" }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:CallerAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      },
+      {
+        Sid       = "AllowGlueService"
+        Effect    = "Allow"
+        Principal = { Service = "glue.amazonaws.com" }
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:CallerAccount" = data.aws_caller_identity.current.account_id
+          }
+        }
+      },
+      {
+        Sid       = "AllowServiceRolesViaGrants"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action = [
+          "kms:CreateGrant",
+          "kms:ListGrants",
+          "kms:RevokeGrant"
+        ]
+        Resource = "*"
+        Condition = {
+          Bool = {
+            "kms:GrantIsForAWSResource" = "true"
+          }
+        }
+      }
+    ]
+  })
 
   tags = merge(var.tags, {
     Name        = "datalake-business-kms-${var.environment}"

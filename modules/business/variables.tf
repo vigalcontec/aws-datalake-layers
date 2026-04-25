@@ -37,3 +37,18 @@ variable "archive_to_glacier_days" {
   type        = number
   default     = 365
 }
+
+# -----------------------------------------------------------------------------
+# Access Logging (Optional - for future compliance requirements)
+# -----------------------------------------------------------------------------
+variable "enable_access_logging" {
+  description = "Enable S3 access logging for audit trail. Requires logs_bucket_name when true."
+  type        = bool
+  default     = false
+}
+
+variable "logs_bucket_name" {
+  description = "Name of the S3 bucket for access logs. Required if enable_access_logging is true."
+  type        = string
+  default     = ""
+}

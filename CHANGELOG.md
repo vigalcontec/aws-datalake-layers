@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-04-25
+
+### Added
+
+- **S3 Bucket Policies** - TLS 1.2+ enforcement on all buckets
+  - `EnforceTLSRequestsOnly` - Denies non-HTTPS requests
+  - `EnforceTLSVersion` - Denies TLS versions below 1.2
+
+- **Access Logging (Optional)** - Prepared for future compliance (GDPR, SOC2, HIPAA)
+  - `enable_access_logging` - Boolean, default `false`
+  - `logs_bucket_name` - Target bucket for access logs
+  - Log prefix format: `{layer}/{environment}/`
+
+- **KMS Key Policy** - Explicit policy for AWS service principals
+  - `AllowLambdaService` - Lambda functions can decrypt/encrypt data
+  - `AllowGlueService` - Glue jobs can decrypt/encrypt data
+  - `AllowServiceRolesViaGrants` - AWS services can create grants
+  - All statements scoped to same account via `kms:CallerAccount` condition
+
+### Changed
+
+- **Lifecycle Configuration** - Now uses variables instead of hardcoded values
+  - Raw: `var.transition_to_ia_days`, `var.transition_to_glacier_days`, `var.noncurrent_version_expiration_days`
+  - Business: `var.archive_to_glacier_days`
+
+- **GitHub Workflow** - Refactored from 358 lines to 224 lines using matrix strategy
+  - Parallel validation across all modules
+  - Dynamic layer matrix for selective deployment
+  - `max-parallel: 1` ensures sequential layer deployment
+  - Cleaner job structure with section comments
+
+### Security
+
+- ✅ TLS 1.2+ enforced via bucket policy (not just encryption)
+- ✅ Proper `depends_on` for bucket policy after public access block
+
+---
+
 ## [0.2.0] - 2026-04-25
 
 ### Added

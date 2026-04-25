@@ -18,6 +18,8 @@ Data lake foundation with Raw, Staging, and Business layers. Includes S3 bucket 
 - [Quick Start](#quick-start)
 - [Module Reference](#module-reference)
 - [Security](#security)
+- [Access Logging (Optional)](#access-logging-optional)
+- [KMS Key Policy](#kms-key-policy)
 - [Dependencies](#dependencies)
 
 ---
@@ -258,6 +260,88 @@ module "business" {
 - ✅ Public access blocked on all buckets
 - ✅ Versioning enabled for data recovery
 - ✅ Bucket key enabled for cost optimization
+
+---
+
+## Access Logging (Optional)
+
+Access logging is **disabled by default** but prepared for future compliance requirements (GDPR, SOC2, HIPAA).
+
+### Enable Access Logging
+
+```hcl
+module "raw" {
+  source = "./modules/raw"
+  # ... other variables ...
+
+  enable_access_logging = true
+  logs_bucket_name      = "your-centralized-logs-bucket"
+}
+```
+
+### Log Format
+
+When enabled, logs are stored with prefix `{layer}/{environment}/`:
+```
+your-logs-bucket/
+├── raw/dev/
+├── raw/prod/
+├── staging/dev/
+├── staging/prod/
+├── business/dev/
+└── business/prod/
+```
+
+> **Note:** You must create the logs bucket separately with appropriate lifecycle policies.
+
+---
+
+## KMS Key Policy
+
+All KMS keys include an explicit key policy that allows AWS service principals to encrypt/decrypt data.
+
+### Policy Statements
+
+| Sid | Principal | Actions | Purpose |
+|-----|-----------|---------|---------|
+| `EnableRootAccountPermissions` | Account root | `kms:*` | Full admin access for account |
+| `AllowLambdaService` | `lambda.amazonaws.com` | `Decrypt`, `GenerateDataKey` | Lambda functions can read/write encrypted data |
+| `AllowGlueService` | `glue.amazonaws.com` | `Decrypt`, `GenerateDataKey` | Glue jobs can read/write encrypted data |
+| `AllowServiceRolesViaGrants` | Account root | `CreateGrant`, `ListGrants`, `RevokeGrant` | AWS services can create grants for resources |
+
+### Security Conditions
+
+All service principal statements include:
+```hcl
+Condition = {
+  StringEquals = {
+    "kms:CallerAccount" = data.aws_caller_identity.current.account_id
+  }
+}
+```
+
+This ensures only Lambda/Glue from **your account** can use the key (not cross-account).
+
+### How Lambda/Glue Access Works
+
+1. **KMS Key Policy** - Allows the service principal (`lambda.amazonaws.com`, `glue.amazonaws.com`)
+2. **IAM Role Policy** - Your Lambda/Glue execution role needs `kms:Decrypt` and `kms:GenerateDataKey` permissions
+3. **S3 Bucket** - Uses the KMS key for server-side encryption
+
+Example Lambda execution role policy:
+```hcl
+{
+  Effect = "Allow"
+  Action = [
+    "kms:Decrypt",
+    "kms:GenerateDataKey"
+  ]
+  Resource = [
+    data.aws_ssm_parameter.raw_kms_key_arn.value,
+    data.aws_ssm_parameter.staging_kms_key_arn.value
+  ]
+}
+```
 
 ---
 
