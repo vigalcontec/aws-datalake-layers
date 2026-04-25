@@ -91,6 +91,7 @@ resource "aws_kms_key" "business" {
 
   tags = merge(var.tags, {
     Name        = "datalake-business-kms-${var.environment}"
+    Project     = "datalake"
     Layer       = "business"
     Environment = var.environment
   })
