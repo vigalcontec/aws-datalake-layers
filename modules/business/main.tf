@@ -103,6 +103,51 @@ resource "aws_kms_alias" "business" {
 }
 
 # -----------------------------------------------------------------------------
+# SSM Parameter Store - Cross-project exports
+# -----------------------------------------------------------------------------
+resource "aws_ssm_parameter" "bucket_arn" {
+  name        = "/${var.environment}/datalake/business/bucket_arn"
+  description = "ARN of the Business layer S3 bucket"
+  type        = "String"
+  value       = aws_s3_bucket.business.arn
+
+  tags = merge(var.tags, {
+    Name        = "datalake-business-bucket-arn-${var.environment}"
+    Project     = "datalake"
+    Layer       = "business"
+    Environment = var.environment
+  })
+}
+
+resource "aws_ssm_parameter" "bucket_name" {
+  name        = "/${var.environment}/datalake/business/bucket_name"
+  description = "Name of the Business layer S3 bucket"
+  type        = "String"
+  value       = aws_s3_bucket.business.id
+
+  tags = merge(var.tags, {
+    Name        = "datalake-business-bucket-name-${var.environment}"
+    Project     = "datalake"
+    Layer       = "business"
+    Environment = var.environment
+  })
+}
+
+resource "aws_ssm_parameter" "kms_key_arn" {
+  name        = "/${var.environment}/datalake/business/kms_key_arn"
+  description = "ARN of the Business layer KMS key"
+  type        = "String"
+  value       = aws_kms_key.business.arn
+
+  tags = merge(var.tags, {
+    Name        = "datalake-business-kms-arn-${var.environment}"
+    Project     = "datalake"
+    Layer       = "business"
+    Environment = var.environment
+  })
+}
+
+# -----------------------------------------------------------------------------
 # Data Sources
 # -----------------------------------------------------------------------------
 data "aws_caller_identity" "current" {}

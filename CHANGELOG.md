@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-04-25
+
+### Added
+
+- **SSM Parameter Store exports** - All layers now export bucket ARNs, names, and KMS key ARNs to SSM for cross-project integration
+
+### SSM Parameters Created
+
+| Layer | Parameter Path | Value |
+|-------|----------------|-------|
+| Raw | `/{env}/datalake/raw/bucket_arn` | S3 bucket ARN |
+| Raw | `/{env}/datalake/raw/bucket_name` | S3 bucket name |
+| Raw | `/{env}/datalake/raw/kms_key_arn` | KMS key ARN |
+| Staging | `/{env}/datalake/staging/bucket_arn` | S3 bucket ARN |
+| Staging | `/{env}/datalake/staging/bucket_name` | S3 bucket name |
+| Staging | `/{env}/datalake/staging/kms_key_arn` | KMS key ARN |
+| Business | `/{env}/datalake/business/bucket_arn` | S3 bucket ARN |
+| Business | `/{env}/datalake/business/bucket_name` | S3 bucket name |
+| Business | `/{env}/datalake/business/kms_key_arn` | KMS key ARN |
+
+### Changed
+
+- **KMS keys** - Added `Project = "datalake"` tag for IAM policy condition matching
+
+---
+
 ## [0.1.0] - 2026-04-25
 
 ### Initial Release

@@ -108,6 +108,51 @@ resource "aws_kms_alias" "raw" {
 }
 
 # -----------------------------------------------------------------------------
+# SSM Parameter Store - Cross-project exports
+# -----------------------------------------------------------------------------
+resource "aws_ssm_parameter" "bucket_arn" {
+  name        = "/${var.environment}/datalake/raw/bucket_arn"
+  description = "ARN of the Raw layer S3 bucket"
+  type        = "String"
+  value       = aws_s3_bucket.raw.arn
+
+  tags = merge(var.tags, {
+    Name        = "datalake-raw-bucket-arn-${var.environment}"
+    Project     = "datalake"
+    Layer       = "raw"
+    Environment = var.environment
+  })
+}
+
+resource "aws_ssm_parameter" "bucket_name" {
+  name        = "/${var.environment}/datalake/raw/bucket_name"
+  description = "Name of the Raw layer S3 bucket"
+  type        = "String"
+  value       = aws_s3_bucket.raw.id
+
+  tags = merge(var.tags, {
+    Name        = "datalake-raw-bucket-name-${var.environment}"
+    Project     = "datalake"
+    Layer       = "raw"
+    Environment = var.environment
+  })
+}
+
+resource "aws_ssm_parameter" "kms_key_arn" {
+  name        = "/${var.environment}/datalake/raw/kms_key_arn"
+  description = "ARN of the Raw layer KMS key"
+  type        = "String"
+  value       = aws_kms_key.raw.arn
+
+  tags = merge(var.tags, {
+    Name        = "datalake-raw-kms-arn-${var.environment}"
+    Project     = "datalake"
+    Layer       = "raw"
+    Environment = var.environment
+  })
+}
+
+# -----------------------------------------------------------------------------
 # Data Sources
 # -----------------------------------------------------------------------------
 data "aws_caller_identity" "current" {}
