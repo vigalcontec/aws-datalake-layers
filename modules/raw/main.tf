@@ -59,6 +59,14 @@ resource "aws_s3_bucket_public_access_block" "raw" {
   restrict_public_buckets = true
 }
 
+# -----------------------------------------------------------------------------
+# EventBridge Notifications - Enable S3 events to EventBridge
+# -----------------------------------------------------------------------------
+resource "aws_s3_bucket_notification" "raw" {
+  bucket      = aws_s3_bucket.raw.id
+  eventbridge = true
+}
+
 resource "aws_s3_bucket_policy" "raw" {
   bucket = aws_s3_bucket.raw.id
 

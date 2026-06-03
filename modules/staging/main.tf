@@ -59,6 +59,14 @@ resource "aws_s3_bucket_public_access_block" "staging" {
   restrict_public_buckets = true
 }
 
+# -----------------------------------------------------------------------------
+# EventBridge Notifications - Enable S3 events to EventBridge
+# -----------------------------------------------------------------------------
+resource "aws_s3_bucket_notification" "staging" {
+  bucket      = aws_s3_bucket.staging.id
+  eventbridge = true
+}
+
 resource "aws_s3_bucket_policy" "staging" {
   bucket = aws_s3_bucket.staging.id
 
